@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="wiremockParser:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/wiremockParser_jar</output-path>
+    <root id="archive" name="wiremockParser.jar">
+      <element id="module-output" name="wiremockParser" />
+    </root>
+  </artifact>
+</component>
