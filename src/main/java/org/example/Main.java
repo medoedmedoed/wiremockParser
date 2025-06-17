@@ -3,6 +3,7 @@ package org.example;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.SocketException;
@@ -20,15 +21,17 @@ import java.util.regex.Pattern;
 
 public class Main {
     public static final String HOSTMOCKS = "localhost";
-    public static final String HOSTINFLUX = "10.230.33.176:8086";
+    public static final String HOSTINFLUX = "10.230.33.176:8086"; //"localhost:8086";  //"10.230.33.176:8086";
 
 
     public static void main(String[] args) throws IOException, InterruptedException {
         System.out.println("Start application");
 
-        File folder = new File(args[0]);
+        File folder = new File("C:\\wiremock");
+        if(args.length > 0) {
+            folder = new File(args[0]);
+        }
         List<ForInflux> finalList = new ArrayList<>();
-
         File[] folderInWiremock = folder.listFiles();                               //получаем все папки в wiremock
 
         for (int i = 0; i < folderInWiremock.length; i++) {
@@ -40,15 +43,21 @@ public class Main {
         for (int i = 0, k = 0; i < folderInWiremock.length; i++) {
 
             File folderMappings = new File(folderInWiremock[i] + "/mappings");
-            ArrayList<File> filesIntoFolderMappings = new ArrayList<File>(Arrays.asList(folderMappings.listFiles()));
+            ArrayList<File> filesIntoFolderMappings = new ArrayList<File>(Arrays.asList(folderMappings.listFiles())); //получаем jsonы внутри i-той папки c:\wiremock
 
             for (int j = 0; j < filesIntoFolderMappings.size(); j++, k++) {
-                finalList.add(ParseFile.parseFile(filesIntoFolderMappings.get(j)));
-                finalList.get(k).setPort(ParseFile.parseBatFile(folderInWiremock[i]));
-                System.out.println(finalList.get(k).toString());
+                try{
+                    finalList.add(ParseFile.parseFile(filesIntoFolderMappings.get(j))); //парсим каждый файл. Достаем метод, url и порт
+                    finalList.get(k).setPort(ParseFile.parseBatFile(folderInWiremock[i]));
+                    System.out.println(finalList.get(k).toString());
+                }catch (FileNotFoundException e){
+                    System.out.println("Не найден файл start.bat в " + folderInWiremock[i].getName() + " для " + filesIntoFolderMappings.get(j));
+                }
             }
 
         }
+
+        Thread.sleep(10000);
 
         HttpClient client = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
@@ -57,20 +66,79 @@ public class Main {
                 .build();
 
         //-------------------------------------------------------------------------------------------------
-        HttpRequest request;
-        HttpRequest request1;
-        HttpRequest request2;
 
-        HttpRequest.BodyPublisher bodyPublisher;
+        HttpRequest requestToMock;
+        HttpRequest requestToInflux;
+
         HttpRequest.BodyPublisher bodyPublisherToInflux;
 
-        HttpResponse<String> response;
-        HttpResponse<String> response1;
-        HttpResponse<String> response2;
+        HttpResponse<String> responseToMock;
+        HttpResponse<String> responseToInflux;
+
+        //отправляем один раз инфу по урлам и портам
+
+        ArrayList<ForInflux> listFolderToCheckRequest = new ArrayList<>();
+
+        for(int i = 0; finalList.size() > i; i++){
+
+            if(finalList.get(i).getUrlPattern().equals("/check")){
+                listFolderToCheckRequest.add(finalList.get(i));
+            }
+
+            bodyPublisherToInflux = HttpRequest.BodyPublishers.ofString("wiremock," + finalList.get(i).toString());
+
+            requestToInflux = HttpRequest
+                    .newBuilder()
+                    .POST(bodyPublisherToInflux)
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .uri(URI.create("http://" + HOSTINFLUX + "/write?db=wiremock"))
+                    .build();
+
+            responseToInflux = client.send(requestToInflux, HttpResponse.BodyHandlers.ofString());
+        }
+
+        while (true){
+            for(int i = 0; listFolderToCheckRequest.size() > i; ++i){
+                try {
+                    requestToMock = HttpRequest
+                            .newBuilder()
+                            .GET()
+                            .uri(URI.create("http://" + HOSTMOCKS + ":" + listFolderToCheckRequest.get(i).getPort() + listFolderToCheckRequest.get(i).getUrlPattern()))
+                            .build();
+
+                    responseToMock = client.send(requestToMock, HttpResponse.BodyHandlers.ofString());
+
+                    listFolderToCheckRequest.get(i).setCount(200);
+
+                    System.out.println(responseToMock.toString());
+
+                }catch (HttpConnectTimeoutException | SocketException e){
+                    System.out.println("Error to connect into " + listFolderToCheckRequest.get(i).getNameFolder());
+                    listFolderToCheckRequest.get(i).setCount(0);
+                }finally {
+                    //отправляем статус в инфлюкс
+                    bodyPublisherToInflux = HttpRequest.BodyPublishers.ofString("wiremock," + listFolderToCheckRequest.get(i).toString());
+
+                    requestToInflux = HttpRequest
+                            .newBuilder()
+                            .POST(bodyPublisherToInflux)
+                            .header("Content-Type", "text/plain; charset=utf-8")
+                            .uri(URI.create("http://" + HOSTINFLUX + "/write?db=wiremock"))
+                            .build();
+
+                    responseToInflux = client.send(requestToInflux, HttpResponse.BodyHandlers.ofString());
+                }
+            }
+
+            System.out.println("--------------------------------------------------------------------------------------------");
+            Thread.sleep(600000);
+        }
 
 
-        while(true) {
-            for (int i = 0; i < finalList.size(); i++) {
+
+        //великолепный код, который отлавливает количество обращений в каждую заглушку
+        /*while(true) {
+            for (int i = 0; i < finalList.size(); i++) {   //ходим опрашивать по всем активным заглушкам
                 String bodyToMock = "{\"method\": \"" + finalList.get(i).getMethod() + "\"," +
                         "\"url\": \"" + finalList.get(i).getUrlPattern() + "\"}";
 
@@ -144,6 +212,6 @@ public class Main {
             System.out.println("--------------------------------------------------------------------------------------------");
             Thread.sleep(60000);
 
-        }
+        }*/
     }
 }
